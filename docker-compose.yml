@@ -1,0 +1,79 @@
+services:
+
+  app:
+    build: .
+    container_name: crawler_app
+    ports:
+      - "8000:8000" 
+    env_file:
+      - .env
+    volumes:
+      - ./app:/app/app
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - crawler-net
+
+  mongo:
+    image: mongo:7
+    container_name: crawler_mongo
+    ports:
+      - "27017:27017" 
+    volumes:
+      - mongo_data:/data/db  
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - crawler-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: crawler_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - crawler-net
+
+  minio:
+    image: minio/minio:latest
+    container_name: crawler_minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000" 
+      - "9001:9001"  
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - crawler-net
+
+volumes:
+  mongo_data:
+  redis_data:
+  minio_data:
+
+networks:
+  crawler-net:
+    driver: bridge
