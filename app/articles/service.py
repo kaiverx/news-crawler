@@ -1,3 +1,4 @@
+import time
 from datetime import datetime
 from math import ceil
 from typing import Any
@@ -15,6 +16,11 @@ from app.articles.publisher import ArticlePublisher, PublishError
 from app.articles.repository import ArticleRepository
 from app.articles.rewriter import LLMProvider, RewriteError, RewriteParams
 from app.common.exceptions import NotFoundError, ValidationError
+from app.common.logging import get_logger
+from app.common.metrics import llm_rewrite_duration_seconds
+from app.config import get_settings
+
+log = get_logger("articles")
 
 
 class ArticleService:
@@ -114,15 +120,26 @@ class ArticleService:
             {"status": ArticleStatus.REWRITING.value},
         )
 
+        provider_name = get_settings().llm_provider
+        start_ts = time.perf_counter()
+        llm_status = "success"
+
         try:
             result = await self.llm.rewrite(article.title, article.original_text, params)
         except RewriteError as exc:
+            llm_status = "error"
+            log.warning("rewrite_failed", article_id=article_id, error=str(exc))
             await self.repo.update(
                 ObjectId(article_id),
                 {"status": ArticleStatus.NEW.value},
             )
             raise ValidationError(f"Рерайт не удался: {exc}") from exc
+        finally:
+            llm_rewrite_duration_seconds.labels(
+                provider=provider_name, status=llm_status
+            ).observe(time.perf_counter() - start_ts)
 
+        log.info("article_rewritten", article_id=article_id, provider=provider_name)
         updated = await self.repo.update(
             ObjectId(article_id),
             {
@@ -144,6 +161,7 @@ class ArticleService:
             ObjectId(article_id),
             {"status": ArticleStatus.APPROVED.value},
         )
+        log.info("article_approved", article_id=article_id)
         return Article.model_validate(updated)
 
     async def reject(self, article_id: str) -> Article:
@@ -156,6 +174,7 @@ class ArticleService:
             ObjectId(article_id),
             {"status": ArticleStatus.REJECTED.value},
         )
+        log.info("article_rejected", article_id=article_id)
         return Article.model_validate(updated)
 
     async def publish(self, article_id: str) -> Article:
@@ -189,12 +208,14 @@ class ArticleService:
         try:
             response = await self.publisher.publish(payload)
         except PublishError as exc:
+            log.warning("publish_failed", article_id=article_id, error=str(exc))
             await self.repo.update(
                 ObjectId(article_id),
                 {"status": ArticleStatus.APPROVED.value},
             )
             raise ValidationError(f"Публикация не удалась: {exc}") from exc
 
+        log.info("article_published", article_id=article_id)
         updated = await self.repo.update(
             ObjectId(article_id),
             {
